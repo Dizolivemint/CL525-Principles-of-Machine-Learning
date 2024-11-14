@@ -1,5 +1,5 @@
 'use client'
-
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import Script from 'next/script'
 import { useEffect, useRef, useState } from 'react'
 
@@ -15,7 +15,8 @@ export default function BodyPoseClient() {
     const setupPose = async () => {
       try {
         console.log('Setting up BodyPose...')
-        const bodyPose = await new Promise((resolve, reject) => {
+        // ML5 types are not available
+        const bodyPose: any = await new Promise((resolve) => {
           console.log('Initializing ML5 BodyPose...')
           const pose = window.ml5.bodyPose('MoveNet', {
             modelType: 'MULTIPOSE_LIGHTNING',
@@ -85,7 +86,7 @@ export default function BodyPoseClient() {
                 })
 
                 // Draw skeleton with thicker lines
-                connections.forEach((connection) => {
+                connections.forEach((connection: any) => {
                   const [p1, p2] = connection
                   const point1 = pose.keypoints?.[p1]
                   const point2 = pose.keypoints?.[p2]
@@ -115,7 +116,7 @@ export default function BodyPoseClient() {
     <div className="flex flex-col items-center gap-4">
       <Script
         src="https://cdn.jsdelivr.net/npm/p5@1.11.1/lib/p5.min.js"
-        strategy="beforeInteractive"
+        strategy="afterInteractive"
       />
       <Script
         src="https://unpkg.com/ml5@1/dist/ml5.min.js"
