@@ -3,158 +3,113 @@
 import Script from 'next/script'
 import { useEffect, useRef, useState } from 'react'
 
-interface PoseKeypoint {
-  score: number
-  position: {
-    x: number
-    y: number
-  }
-}
-
-interface Pose {
-  pose: {
-    keypoints: PoseKeypoint[]
-  }
-  skeleton: Array<[{ position: { x: number, y: number } }, { position: { x: number, y: number } }]>
-}
-
-export default function PoseNetClient() {
-  const videoRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLDivElement>(null)
+export default function BodyPoseClient() {
+  const canvasParentRef = useRef<HTMLDivElement>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isScriptsReady, setIsScriptsReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [permissionStatus, setPermissionStatus] = useState<PermissionState | null>(null)
-
-  // Check camera permission status
+  
   useEffect(() => {
-    const checkPermissions = async () => {
+    if (!isScriptsReady || !window.ml5 || !canvasParentRef.current) return
+
+    const setupPose = async () => {
       try {
-        const result = await navigator.permissions.query({ name: 'camera' as PermissionName })
-        setPermissionStatus(result.state)
-        
-        result.addEventListener('change', () => {
-          setPermissionStatus(result.state)
+        console.log('Setting up BodyPose...')
+        const bodyPose = await new Promise((resolve, reject) => {
+          console.log('Initializing ML5 BodyPose...')
+          const pose = window.ml5.bodyPose('MoveNet', {
+            modelType: 'MULTIPOSE_LIGHTNING',
+            enableSmoothing: true,
+            minPoseScore: 0.25
+          }, () => {
+            console.log('BodyPose model loaded')
+            resolve(pose)
+          })
         })
-      } catch (err) {
-        console.warn('Permission API not supported, will try direct camera access')
-      }
-    }
 
-    checkPermissions()
-  }, [])
+        const connections = bodyPose.getSkeleton()
+        console.log('Got skeleton connections:', connections)
+        let poses: any[] = []
+        let video: any
 
-  useEffect(() => {
-    if (!isScriptsReady || !window.p5 || !window.ml5) return
-
-    let videoStream: any
-    let poseNet: any
-    let poses: Pose[] = []
-    let sketch: any = null
-    
-    const initializeCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            facingMode: 'user'
-          } 
-        })
-        
-        sketch = new window.p5((p: any) => {
-          p.setup = () => {
+        new window.p5((p: any) => {
+          p.setup = async () => {
+            console.log('P5 setup starting...')
             const canvas = p.createCanvas(640, 480)
-            canvas.parent(canvasRef.current)
+            canvas.parent(canvasParentRef.current)
             
-            videoStream = p.createVideo([])
-            videoStream.elt.srcObject = stream
-            videoStream.size(640, 480)
-            videoStream.play()
-
-            // Initialize PoseNet
-            poseNet = window.ml5.poseNet(videoStream, {
-              architecture: 'MobileNetV1',
-              imageScaleFactor: 0.3,
-              outputStride: 16,
-              flipHorizontal: false,
-              minConfidence: 0.5,
-              maxPoseDetections: 5,
-              scoreThreshold: 0.5,
-              nmsRadius: 20,
-              detectionType: 'single',
-              multiplier: 0.75,
-            }, () => {
-              console.log('Model Loaded!')
-              setIsLoading(false)
-            })
-
-            poseNet.on('pose', (results: Pose[]) => {
-              poses = results
-            })
+            try {
+              console.log('Requesting camera access...')
+              const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: {
+                  width: { ideal: 640 },
+                  height: { ideal: 480 }
+                } 
+              })
+              console.log('Camera access granted')
+              video = p.createVideo([])
+              video.elt.srcObject = stream
+              video.size(640, 480)
+              video.play()
+              
+              bodyPose.detectStart(video, (results: any[]) => {
+                console.log('Poses detected:', results.length)
+                poses = results
+              })
+            } catch (err) {
+              console.error('Camera error:', err)
+              setError('Camera access error: ' + (err as Error).message)
+            }
+            
+            setIsLoading(false)
           }
 
           p.draw = () => {
-            if (videoStream) {
-              p.image(videoStream, 0, 0)
-              drawKeypoints()
-              drawSkeleton()
-            }
-          }
+            if (video) {
+              p.image(video, 0, 0)
+              
+              poses.forEach((pose) => {
+                // Draw keypoints with larger circles and labels
+                pose.keypoints?.forEach((keypoint: any) => {
+                  if (keypoint.confidence > 0.2) {
+                    p.fill(255, 0, 0)
+                    p.noStroke()
+                    p.ellipse(keypoint.x, keypoint.y, 15, 15)
+                    
+                    p.fill(255)
+                    p.stroke(0)
+                    p.strokeWeight(2)
+                    p.textSize(14)
+                    p.text(keypoint.name || '', keypoint.x + 15, keypoint.y)
+                  }
+                })
 
-          const drawKeypoints = () => {
-            for (let i = 0; i < poses.length; i++) {
-              const pose = poses[i].pose
-              for (let j = 0; j < pose.keypoints.length; j++) {
-                const keypoint = pose.keypoints[j]
-                if (keypoint.score > 0.2) {
-                  p.fill(255, 0, 0)
-                  p.noStroke()
-                  p.ellipse(keypoint.position.x, keypoint.position.y, 10, 10)
-                }
-              }
-            }
-          }
+                // Draw skeleton with thicker lines
+                connections.forEach((connection) => {
+                  const [p1, p2] = connection
+                  const point1 = pose.keypoints?.[p1]
+                  const point2 = pose.keypoints?.[p2]
 
-          const drawSkeleton = () => {
-            for (let i = 0; i < poses.length; i++) {
-              const skeleton = poses[i].skeleton
-              for (let j = 0; j < skeleton.length; j++) {
-                const partA = skeleton[j][0]
-                const partB = skeleton[j][1]
-                p.stroke(255, 0, 0)
-                p.line(partA.position.x, partA.position.y, partB.position.x, partB.position.y)
-              }
+                  if (point1?.confidence > 0.2 && point2?.confidence > 0.2) {
+                    p.stroke(255, 0, 0)
+                    p.strokeWeight(3)
+                    p.line(point1.x, point1.y, point2.x, point2.y)
+                  }
+                })
+              })
             }
           }
         })
-      } catch (err: any) {
-        if (err.name === 'NotAllowedError') {
-          setError('Camera access denied. Please enable camera permissions.')
-        } else if (err.name === 'NotFoundError') {
-          setError('No camera found. Please connect a camera and try again.')
-        } else {
-          setError(`Error accessing camera: ${err.message}`)
-        }
+
+      } catch (err) {
+        console.error('Setup error:', err)
+        setError((err as Error).message)
         setIsLoading(false)
       }
     }
 
-    if (permissionStatus !== 'denied') {
-      initializeCamera()
-    } else {
-      setError('Camera permission denied. Please enable camera access in your browser settings.')
-      setIsLoading(false)
-    }
-
-    return () => {
-      if (videoStream?.elt?.srcObject) {
-        const tracks = videoStream.elt.srcObject.getTracks()
-        tracks.forEach((track: MediaStreamTrack) => track.stop())
-      }
-      if (sketch) sketch.remove()
-    }
-  }, [isScriptsReady, permissionStatus])
+    setupPose()
+  }, [isScriptsReady])
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -164,28 +119,34 @@ export default function PoseNetClient() {
       />
       <Script
         src="https://unpkg.com/ml5@1/dist/ml5.min.js"
-        strategy="beforeInteractive"
-        onLoad={() => setIsScriptsReady(true)}
+        strategy="afterInteractive"
+        onLoad={() => {
+          console.log('ML5 loaded')
+          setIsScriptsReady(true)
+        }}
       />
       
-      <h1 className="text-2xl font-bold">PoseNet Demo</h1>
+      <h1 className="text-2xl font-bold">BodyPose Demo</h1>
+      
+      <div 
+        ref={canvasParentRef}
+        className="border rounded-lg overflow-hidden shadow-lg"
+        style={{ width: '640px', height: '480px' }}
+      />
+
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
           <span className="block sm:inline">{error}</span>
         </div>
       )}
-      {isLoading && !error ? (
-        <div className="flex items-center gap-2">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900"></div>
-          <p>Loading PoseNet...</p>
+      
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80">
+          <div className="flex items-center gap-2">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900"></div>
+            <p>Loading BodyPose...</p>
+          </div>
         </div>
-      ) : (
-        <div ref={canvasRef} className="border rounded-lg overflow-hidden shadow-lg"></div>
-      )}
-      {permissionStatus === 'prompt' && (
-        <p className="text-sm text-gray-600">
-          You'll be asked to allow camera access when starting the demo.
-        </p>
       )}
     </div>
   )
